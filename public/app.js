@@ -1,7 +1,7 @@
 const app=document.querySelector('#app');
 const modal=document.querySelector('#modal');
 const toastEl=document.querySelector('#toast');
-const state={user:null,data:null,reports:[],history:[],detail:null,categories:[],filter:'all',category:'all',connection:'all',sort:'energy',search:'',authMode:'login',stream:null,report:null,days:7};
+const state={user:null,data:null,reports:[],history:[],detail:null,categories:[],filter:'all',category:'all',connection:'all',sort:'energy',search:'',authMode:'login',stream:null,report:null,days:7,updateMode:'polling'};
 let toastTimer,refreshTimer,refreshBusy=false;
 const e=value=>String(value??'').replace(/[&<>"']/g,char=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[char]));
 const number=(value,digits=3)=>value===null||value===undefined?'—':Number(value).toLocaleString('zh-CN',{maximumFractionDigits:digits});
@@ -48,7 +48,7 @@ async function refresh(renderNow=true){
 }
 function connectEvents(){
   state.stream?.close();
-  if(location.hostname.endsWith('.workers.dev')) return;
+  if(state.updateMode==='polling') return;
   const stream=new EventSource('/api/events');state.stream=stream;
   stream.addEventListener('connected',()=>{document.querySelector('#connection')?.replaceChildren(document.createTextNode('服务已连接'));});
   stream.onerror=()=>{document.querySelector('#connection')?.replaceChildren(document.createTextNode('连接恢复中'));};
@@ -66,7 +66,7 @@ const nav=[['overview','总览'],['devices','家电'],['reports','AI 报告'],['
 function shell(title,subtitle,content){
   const current=route().split('/')[0];
   const active=current==='device'||current==='add'||current==='alerts'||current==='integration'?'devices':current==='report'||current==='comparison'||current==='advice'?'reports':current;
-  app.innerHTML=`<div class="shell"><aside class="sidebar"><a class="brand" href="#overview"><span class="brand-icon">ϟ</span><div><strong>WattGuard</strong><small>家庭用电</small></div></a><div class="home-label"><small>当前家庭</small><strong>${e(state.user.name)}</strong></div><nav aria-label="主导航">${nav.map(([id,label],i)=>`<a href="#${id}" class="${active===id?'active':''}"${active===id?' aria-current="page"':''}><span>0${i+1}</span>${label}</a>`).join('')}</nav><div class="sidebar-tools">${current==='overview'?'':'<a href="#add">添加智能插座</a>'}<a href="#alerts">设备状态</a><a href="#integration">设备接入</a></div><div class="sidebar-footer"><span id="connection">${location.hostname.endsWith('.workers.dev')?'每 30 秒同步':'服务已连接'}</span>${btn('logout','退出登录')}</div></aside><div class="workspace"><header class="topbar"><span>${e(state.user.name)} / ${e(title)}</span><span class="topbar-freshness">${e(freshness(latestReading(state.data.devices)))}</span><a class="account-link" href="#settings" title="家庭设置"><span class="avatar">家</span>${e(state.user.name)}</a></header><main><div class="page-head"><h1>${e(title)}</h1><p>${e(subtitle)}</p></div>${content}<footer class="page-footer"><span>只统计已接入家电；费用按 ${e(state.user.price)} 元 / kWh 估算</span><span>页面刷新 ${date(Date.now(),true)}</span></footer></main></div></div>`;
+  app.innerHTML=`<div class="shell"><aside class="sidebar"><a class="brand" href="#overview"><span class="brand-icon">ϟ</span><div><strong>WattGuard</strong><small>家庭用电</small></div></a><div class="home-label"><small>当前家庭</small><strong>${e(state.user.name)}</strong></div><nav aria-label="主导航">${nav.map(([id,label],i)=>`<a href="#${id}" class="${active===id?'active':''}"${active===id?' aria-current="page"':''}><span>0${i+1}</span>${label}</a>`).join('')}</nav><div class="sidebar-tools">${current==='overview'?'':'<a href="#add">添加智能插座</a>'}<a href="#alerts">设备状态</a><a href="#integration">设备接入</a></div><div class="sidebar-footer"><span id="connection">${state.updateMode==='polling'?'每 30 秒同步':'服务已连接'}</span>${btn('logout','退出登录')}</div></aside><div class="workspace"><header class="topbar"><span>${e(state.user.name)} / ${e(title)}</span><span class="topbar-freshness">${e(freshness(latestReading(state.data.devices)))}</span><a class="account-link" href="#settings" title="家庭设置"><span class="avatar">家</span>${e(state.user.name)}</a></header><main><div class="page-head"><h1>${e(title)}</h1><p>${e(subtitle)}</p></div>${content}<footer class="page-footer"><span>只统计已接入家电；费用按 ${e(state.user.price)} 元 / kWh 估算</span><span>页面刷新 ${date(Date.now(),true)}</span></footer></main></div></div>`;
 }
 function dailyChart(data){
   const keys=[];
@@ -168,7 +168,7 @@ document.addEventListener('submit',async event=>{
   try{
     if(form.dataset.form==='auth'){
       const result=await api(`/api/${state.authMode==='register'?'register':'login'}`,{method:'POST',body:b});
-      state.user=result.user;const me=await api('/api/me');state.categories=me.categories;
+      state.user=result.user;const me=await api('/api/me');state.categories=me.categories;state.updateMode=me.updateMode;
       await load();connectEvents();navigate('overview');render();
     }else if(form.dataset.form==='bind'){
       const {confirmed,...device}=b;const result=await api('/api/devices',{method:'POST',body:device});await load();navigate('devices');render();bindingComplete(result);
@@ -213,6 +213,6 @@ modal.addEventListener('cancel',()=>modal.replaceChildren());
 window.addEventListener('hashchange',render);
 setInterval(()=>{if(state.user&&!modal.open&&!['INPUT','SELECT','TEXTAREA'].includes(document.activeElement?.tagName)&&['overview','alerts'].includes(route().split('/')[0]))refresh();},30000);
 try{
-  const me=await api('/api/me');state.user=me.user;state.categories=me.categories;await load();connectEvents();render();
+  const me=await api('/api/me');state.user=me.user;state.categories=me.categories;state.updateMode=me.updateMode;await load();connectEvents();render();
 }catch(err){if(err.status===401)authView();else app.innerHTML=`<main>${empty('暂时无法连接服务',err.message,btn('reload','重新加载'))}</main>`;}
 document.addEventListener('click',event=>{if(event.target.closest('[data-action="reload"]'))location.reload();});
