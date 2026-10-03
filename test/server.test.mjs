@@ -83,8 +83,10 @@ test('account, telemetry, reports, isolation and persistence', async t => {
   assert.equal(snapshot.devices[0].coveredMs, 300000, 'outage not counted as coverage');
   assert.ok(Math.abs(Object.values(snapshot.daily).reduce((a,b) => a+b, 0) - snapshot.energy) < 1e-9);
   assert.equal(snapshot.devices[0].baseline, null);
-  assert.equal(snapshot.aiConfigured, false);
-  assert.equal((await request(`/api/devices/${id}/identify`, { method: 'POST', cookie })).status, 409);
+  assert.equal(snapshot.aiMode, 'demo');
+  const identification = await request(`/api/devices/${id}/identify`, { method: 'POST', cookie });
+  assert.equal(identification.status, 200);
+  assert.match(identification.data.analysis, /未调用 AI 模型/);
   const suggestion = snapshot.suggestions[0];
   assert.ok(suggestion);
   assert.equal((await request('/api/actions', { method: 'POST', cookie, body: { key: suggestion.key, status: 'adopted' } })).status, 200);
@@ -107,7 +109,14 @@ test('account, telemetry, reports, isolation and persistence', async t => {
   assert.equal((await request('/api/membership', { cookie })).data.orders.length, 1);
   assert.equal((await request('/api/membership', { cookie: other.cookie })).data.orders.length, 0);
   assert.equal((await request('/api/me', { cookie: other.cookie })).data.user.subscriptionActive, false);
-  assert.equal((await request('/api/reports', { method: 'POST', cookie, body: { days: 7, ai: true } })).status, 409, 'model configuration is checked after subscription');
+  const demoReport = await request('/api/reports', { method: 'POST', cookie, body: { days: 7, ai: true } });
+  assert.equal(demoReport.status, 200);
+  const savedDemo = await request(`/api/reports/${demoReport.data.id}`, { cookie });
+  assert.equal(savedDemo.data.kind, 'demo_ai');
+  assert.equal(savedDemo.data.body.provider, 'demo-rules');
+  assert.match(savedDemo.data.body.text, /工作电脑/);
+  assert.match(savedDemo.data.body.text, /同类用电比较/);
+  assert.match(savedDemo.data.body.text, /未调用 AI 模型/);
   assert.equal((await request('/api/reports', { method: 'POST', cookie, body: { days: 7, ai: 'false' } })).status, 400);
   await request(`/api/devices/${id}`, { method: 'PATCH', cookie, body: { ...deviceBody, alias: '改名电脑' } });
   assert.equal((await request(`/api/reports/${report.data.id}`, { cookie })).data.body.snapshot.devices[0].alias, '工作电脑', 'report snapshot remains immutable');
@@ -128,7 +137,7 @@ test('account, telemetry, reports, isolation and persistence', async t => {
   assert.equal((await request('/api/membership/cancel', { method: 'POST', cookie })).status, 409);
   assert.equal((await request('/api/reports', { method: 'POST', cookie, body: { days: 7, ai: true } })).status, 403);
   assert.equal((await request('/api/membership', { cookie })).data.orders.length, 2);
-  assert.equal((await request('/api/reports', { cookie })).data.reports.length, 1);
+  assert.equal((await request('/api/reports', { cookie })).data.reports.length, 2);
   assert.equal((await request('/api/dashboard', { cookie: other.cookie })).data.devices.length, 0);
   assert.equal((await request(`/api/devices/${id}`, { method: 'DELETE', cookie })).status, 200);
   assert.equal((await upload(telemetry(Date.now(), 300))).status, 404);

@@ -44,9 +44,17 @@ assert.equal((await request('/api/telemetry', { method: 'POST', body: { ...telem
 const snapshot = await request('/api/dashboard', { cookie: owner.cookie });
 assert.equal(snapshot.status, 200);
 assert.ok(snapshot.data.energy > 0, 'measured interval should produce energy');
+assert.equal(snapshot.data.aiMode, 'demo');
 const report = await request('/api/reports', { method: 'POST', cookie: owner.cookie, body: { days: 7, ai: false } });
 assert.equal(report.status, 200, JSON.stringify(report.data));
 assert.equal((await request('/api/reports', { method: 'POST', cookie: owner.cookie, body: { days: 7, ai: true } })).status, 403);
+const membership = await request('/api/membership/orders', { method: 'POST', cookie: owner.cookie, body: { plan: 'monthly' } });
+assert.equal(membership.status, 200);
+const demo = await request('/api/reports', { method: 'POST', cookie: owner.cookie, body: { days: 7, ai: true } });
+assert.equal(demo.status, 200, JSON.stringify(demo.data));
+const savedDemo = await request(`/api/reports/${demo.data.id}`, { cookie: owner.cookie });
+assert.equal(savedDemo.data.kind, 'demo_ai');
+assert.match(savedDemo.data.body.text, /未调用 AI 模型/);
 assert.equal((await request(`/api/reports/${report.data.id}`, { cookie: owner.cookie })).data.kind, 'statistics');
 assert.equal((await request(`/api/reports/${report.data.id}`, { cookie: other.cookie })).status, 404);
 assert.equal((await request(`/api/devices/${bindingId}/export`, { cookie: owner.cookie })).status, 200);

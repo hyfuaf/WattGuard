@@ -14,7 +14,7 @@ npm run deploy:cf
 
 `wrangler.toml` 已绑定 `wattguard-db`。线上页面每 30 秒同步一次用电状态；设备上传后新数据会进入 D1。部署使用 Cloudflare 分配的 `*.workers.dev` HTTPS 地址，具体地址以 `wrangler deploy` 输出为准。
 
-千问是可选配置。需要启用时，给 Cloudflare Worker 设置 `QWEN_API_KEY` Secret，并在网站开通会员及允许 AI 分析。模型名由 `wrangler.toml` 中的 `QWEN_MODEL` 指定，默认 `qwen-plus`。会员购买是演示流程：月度标价 ¥19、年度标价 ¥190，但实际支付 ¥0，无支付渠道和自动续费。会员到期或主动结束后，服务端不再允许生成 AI 报告。未配置 Key 时统计报告照常工作，AI 报告不可用。报告中的同类比较由模型作有条件的定性分析；未接入可靠基准时不会给出虚构的平均值或排名。
+AI 报告现在使用网站内置的演示规则，不调用外部模型，不需要 API Key。会员购买也是演示流程：月度标价 ¥19、年度标价 ¥190，但实际支付 ¥0，无支付渠道和自动续费。会员到期或主动结束后，服务端不再允许生成演示 AI 报告。报告根据现有读数生成概况、逐台家电的有条件比较和节电建议；未接入可靠基准时不会给出虚构的平均值或排名。
 
 ## 运行
 
@@ -67,26 +67,11 @@ Content-Type: application/json
 - 费用使用家庭设置中的单一电价，不等同于供电公司的分时或阶梯账单。
 - 报告保留生成时快照；补传后需要重新生成报告。
 
-## 真实 AI 服务
+## AI 演示服务
 
-千问请求集中在 [`src/qwen.js`](src/qwen.js)，使用阿里云百炼的 OpenAI 兼容 Chat Completions 接口。服务端读取 `QWEN_API_KEY` 与 `QWEN_MODEL`；网页不接收 API Key。其他平台的登录状态或 API Key 不能代替百炼 API Key。
+[`src/demo-ai.js`](src/demo-ai.js) 在服务端按已记录的功率、电量和采样覆盖率生成演示报告及电器候选分析。它没有调用 AI 模型，也不会向第三方发送家庭数据。报告存为 `demo_ai`，页面标注“演示分析”，与以前可能生成的真实模型报告区分。
 
-本地 Node 服务：将 `.env.example` 复制为 `.env`，把 `YOUR_QWEN_API_KEY` 换成自己的百炼 Key，然后运行 `npm start`。`.env` 已被 Git 忽略。
-
-本地 Cloudflare Worker：将 `.dev.vars.example` 复制为 `.dev.vars`，填入自己的 Key，再运行 `npm run dev:cf`。`.dev.vars` 已被 Git 忽略。
-
-线上 Cloudflare Worker：在仓库目录执行以下命令，按提示输入 Key，随后部署。`QWEN_MODEL` 已写在 `wrangler.toml` 中。不要把 Key 写进该文件或提交到 GitHub。
-
-```sh
-npx wrangler secret put QWEN_API_KEY
-npm run deploy:cf
-```
-
-在网页“订阅”中完成演示开通，并在“家庭与设置”中授权后，AI 报告会调用百炼接口；电器候选识别仅需要授权。请求仅发送去标识化统计摘要或功率时序，不发送邮箱、家庭名称、插座 ID。AI 服务密钥只留在服务端。
-
-未配置或未授权时，统计与规则报告可用；不会把规则输出伪装成 AI。首次识别至少需要 6 条读数，电器类型最终仍由用户确认。真实模型调用需在配置有效 API Key 后验证。
-
-接口参考：https://help.aliyun.com/zh/model-studio/compatibility-mode
+在网页“订阅”中完成演示开通即可生成报告；电器候选识别至少需要 6 条读数，最终类型仍由用户确认。以前的千问接入文件 [`src/qwen.js`](src/qwen.js) 暂时保留作后续开发参考，但当前报告和识别流程均不调用它。
 
 ## 同类电器基准
 
@@ -116,8 +101,6 @@ npm run deploy:cf
 | `PORT` | `4310` | 服务端口 |
 | `HOST` | `127.0.0.1` | 监听地址；局域网可设 `0.0.0.0` |
 | `DB_PATH` | `data/energy.sqlite` | 数据库路径 |
-| `QWEN_API_KEY` | 无 | 阿里云百炼 API Key，仅服务端使用 |
-| `QWEN_MODEL` | `qwen-plus`（Cloudflare） | 千问模型名称，须由 API 账户支持 |
 | `BENCHMARK_FILE` | 无 | 真实同类基准文件路径 |
 | `SECURE_COOKIE` | 无 | HTTPS 部署时设 `1` |
 
