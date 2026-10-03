@@ -1,4 +1,5 @@
 import { generateQwenText, qwenConfigured, qwenErrorMessage } from './qwen.js';
+import { PLANS, membershipActive, membershipEnd, publicMembership } from './membership.js';
 
 const DAY = 86400000;
 const MAX_GAP = 5 * 60000;
@@ -43,7 +44,7 @@ async function loginSession(res, userId) {
   await run('INSERT INTO sessions VALUES(?,?,?)', await digest(token), userId, Date.now() + 7 * DAY);
   res.setHeader('Set-Cookie', `energy_session=${token}; HttpOnly; SameSite=Strict; Path=/; Max-Age=604800; Secure`);
 }
-function publicUser(user) { return { id: user.id, email: user.email, name: user.name, price: user.price, timezone: user.timezone, aiConsent: !!user.ai_consent, subscriptionActive: !!user.subscription_active }; }
+function publicUser(user) { return { id: user.id, email: user.email, name: user.name, price: user.price, timezone: user.timezone, aiConsent: !!user.ai_consent, subscriptionActive: membershipActive(user), membership: publicMembership(user) }; }
 function emit() {}
 async function rateLimit(key, limit, duration) {
   const now = Date.now();
@@ -237,9 +238,18 @@ async function api(req,res,url) {
     res.setHeader('Set-Cookie','energy_session=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0; Secure');return {ok:true};
   }
   if (path==='/api/me' && method==='GET') return {user:publicUser(user),categories:CATEGORIES,updateMode:'polling'};
-  if (path==='/api/subscription' && method==='POST') {
-    const b=await body(req);requireValue(typeof b.active==='boolean','订阅状态格式错误');
-    await run('UPDATE users SET subscription_active=? WHERE id=?',b.active?1:0,user.id);
+  if (path==='/api/membership' && method==='GET') return {membership:publicMembership(user),plans:PLANS,orders:await query('SELECT id,plan,display_price,created,expires,kind FROM membership_orders WHERE user_id=? ORDER BY created DESC',user.id)};
+  if (path==='/api/membership/orders' && method==='POST') {
+    const b=await body(req);requireValue(Object.hasOwn(PLANS,b.plan),'请选择有效套餐');
+    const now=Date.now(), expires=membershipEnd(b.plan,now);
+    const result=await run('UPDATE users SET subscription_active=1,subscription_plan=?,subscription_until=? WHERE id=? AND (subscription_active=0 OR subscription_until<=?)',b.plan,expires,user.id,now);
+    requireValue(result.meta.changes===1,'当前会员仍有效，无需重复开通',409);
+    const order=await run('INSERT INTO membership_orders(user_id,plan,display_price,created,expires) VALUES(?,?,?,?,?)',user.id,b.plan,PLANS[b.plan].price,now,expires);
+    return {user:publicUser(await one('SELECT * FROM users WHERE id=?',user.id)),orderId:Number(order.meta.last_row_id)};
+  }
+  if (path==='/api/membership/cancel' && method==='POST') {
+    requireValue(membershipActive(user),'当前没有有效会员',409);
+    await run('UPDATE users SET subscription_active=0,subscription_plan=NULL,subscription_until=0 WHERE id=?',user.id);
     return {user:publicUser(await one('SELECT * FROM users WHERE id=?',user.id))};
   }
   if (path==='/api/dashboard' && method==='GET') {
@@ -327,7 +337,7 @@ async function api(req,res,url) {
   if(path==='/api/reports' && method==='POST') {
     requireValue(!reportJobs.has(user.id),'报告正在生成，请稍候',409);await rateLimit(`report:${user.id}`,4,60000);
     const b=await body(req);requireValue([1,7,30].includes(b.days) && typeof b.ai==='boolean','周期或 AI 选项不支持');
-    if (b.ai) requireValue(user.subscription_active,'请先启用模拟订阅，再生成千问报告',403);
+    if (b.ai) requireValue(membershipActive(user),'请先开通会员，再生成 AI 报告',403);
     const s=await snapshot(user,b.days);requireValue(s.energy!==null,'还没有可计算的用电量，请先上传连续读数',409);
     reportJobs.add(user.id);
     try {

@@ -5,6 +5,7 @@ import { readFileSync, mkdirSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { generateQwenText, qwenConfigured, qwenErrorMessage } from './src/qwen.js';
+import { PLANS, membershipActive, membershipEnd, publicMembership } from './src/membership.js';
 
 const ROOT = dirname(fileURLToPath(import.meta.url));
 const DB_PATH = process.env.DB_PATH || resolve(ROOT, 'data/energy.sqlite');
@@ -22,6 +23,10 @@ CREATE TABLE IF NOT EXISTS actions(user_id INTEGER REFERENCES users(id),action_k
 if (!db.prepare('PRAGMA table_info(users)').all().some(column => column.name === 'subscription_active')) {
   db.exec('ALTER TABLE users ADD COLUMN subscription_active INTEGER NOT NULL DEFAULT 0');
 }
+if (!db.prepare('PRAGMA table_info(users)').all().some(column => column.name === 'subscription_plan')) {
+  db.exec("ALTER TABLE users ADD COLUMN subscription_plan TEXT; ALTER TABLE users ADD COLUMN subscription_until INTEGER NOT NULL DEFAULT 0; UPDATE users SET subscription_plan='monthly', subscription_until=(unixepoch() * 1000 + 2592000000) WHERE subscription_active=1");
+}
+db.exec("CREATE TABLE IF NOT EXISTS membership_orders(id INTEGER PRIMARY KEY AUTOINCREMENT,user_id INTEGER NOT NULL REFERENCES users(id),plan TEXT NOT NULL,display_price INTEGER NOT NULL,created INTEGER NOT NULL,expires INTEGER NOT NULL,kind TEXT NOT NULL DEFAULT 'demo'); CREATE INDEX IF NOT EXISTS membership_orders_user ON membership_orders(user_id,created DESC)");
 
 const query = (sql, ...args) => db.prepare(sql).all(...args);
 const one = (sql, ...args) => db.prepare(sql).get(...args);
@@ -59,7 +64,7 @@ function loginSession(res, userId) {
   run('INSERT INTO sessions VALUES(?,?,?)', digest(token), userId, Date.now() + 7 * DAY);
   res.setHeader('Set-Cookie', `energy_session=${token}; HttpOnly; SameSite=Strict; Path=/; Max-Age=604800${process.env.SECURE_COOKIE === '1' ? '; Secure' : ''}`);
 }
-function publicUser(user) { return { id: user.id, email: user.email, name: user.name, price: user.price, timezone: user.timezone, aiConsent: !!user.ai_consent, subscriptionActive: !!user.subscription_active }; }
+function publicUser(user) { return { id: user.id, email: user.email, name: user.name, price: user.price, timezone: user.timezone, aiConsent: !!user.ai_consent, subscriptionActive: membershipActive(user), membership: publicMembership(user) }; }
 function emit(userId, event = 'update') {
   for (const res of liveClients.get(userId) || []) res.write(`event: ${event}\ndata: {}\n\n`);
 }
@@ -244,9 +249,18 @@ async function api(req,res,url) {
     res.setHeader('Set-Cookie','energy_session=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0');return {ok:true};
   }
   if (path==='/api/me' && method==='GET') return {user:publicUser(user),categories:CATEGORIES};
-  if (path==='/api/subscription' && method==='POST') {
-    const b=await body(req);requireValue(typeof b.active==='boolean','订阅状态格式错误');
-    run('UPDATE users SET subscription_active=? WHERE id=?',b.active?1:0,user.id);
+  if (path==='/api/membership' && method==='GET') return {membership:publicMembership(user),plans:PLANS,orders:query('SELECT id,plan,display_price,created,expires,kind FROM membership_orders WHERE user_id=? ORDER BY created DESC',user.id)};
+  if (path==='/api/membership/orders' && method==='POST') {
+    const b=await body(req);requireValue(Object.hasOwn(PLANS,b.plan),'请选择有效套餐');
+    const now=Date.now(), expires=membershipEnd(b.plan,now);
+    const result=run('UPDATE users SET subscription_active=1,subscription_plan=?,subscription_until=? WHERE id=? AND (subscription_active=0 OR subscription_until<=?)',b.plan,expires,user.id,now);
+    requireValue(result.changes===1,'当前会员仍有效，无需重复开通',409);
+    const order=run('INSERT INTO membership_orders(user_id,plan,display_price,created,expires) VALUES(?,?,?,?,?)',user.id,b.plan,PLANS[b.plan].price,now,expires);
+    return {user:publicUser(one('SELECT * FROM users WHERE id=?',user.id)),orderId:Number(order.lastInsertRowid)};
+  }
+  if (path==='/api/membership/cancel' && method==='POST') {
+    requireValue(membershipActive(user),'当前没有有效会员',409);
+    run('UPDATE users SET subscription_active=0,subscription_plan=NULL,subscription_until=0 WHERE id=?',user.id);
     return {user:publicUser(one('SELECT * FROM users WHERE id=?',user.id))};
   }
   if (path==='/api/dashboard' && method==='GET') {
@@ -329,7 +343,7 @@ async function api(req,res,url) {
   if(path==='/api/reports' && method==='POST') {
     requireValue(!reportJobs.has(user.id),'报告正在生成，请稍候',409);rateLimit(`report:${user.id}`,4,60000);
     const b=await body(req);requireValue([1,7,30].includes(b.days) && typeof b.ai==='boolean','周期或 AI 选项不支持');
-    if (b.ai) requireValue(user.subscription_active,'请先启用模拟订阅，再生成千问报告',403);
+    if (b.ai) requireValue(membershipActive(user),'请先开通会员，再生成 AI 报告',403);
     const s=snapshot(user,b.days);requireValue(s.energy!==null,'还没有可计算的用电量，请先上传连续读数',409);
     reportJobs.add(user.id);
     try {
