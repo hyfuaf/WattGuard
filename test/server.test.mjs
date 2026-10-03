@@ -1,0 +1,122 @@
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import { spawn } from 'node:child_process';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { resolve } from 'node:path';
+import { once } from 'node:events';
+import { DatabaseSync } from 'node:sqlite';
+
+test('account, telemetry, reports, isolation and persistence', async t => {
+  const dir = mkdtempSync(resolve(tmpdir(), 'home-energy-test-'));
+  const dbPath = resolve(dir, 'test.sqlite');
+  let child, base, fixture;
+  async function start() {
+    child = spawn(process.execPath, ['server.mjs'], {
+      cwd: new URL('..', import.meta.url),
+      env: { ...process.env, PORT: '0', HOST: '127.0.0.1', DB_PATH: dbPath, OPENAI_API_KEY: '', OPENAI_MODEL: '', BENCHMARK_FILE: '' },
+      stdio: ['ignore', 'pipe', 'pipe']
+    });
+    base = await new Promise((resolve, reject) => {
+      let log = '';
+      const timeout = setTimeout(() => reject(new Error('Server startup timeout: ' + log)), 10000);
+      child.stdout.on('data', chunk => {
+        log += chunk;
+        const match = log.match(/http:\/\/127\.0\.0\.1:\d+/);
+        if (match) { clearTimeout(timeout); resolve(match[0]); }
+      });
+      child.on('error', reject);
+      child.on('exit', code => { clearTimeout(timeout); reject(new Error('Server exited ' + code)); });
+    });
+  }
+  async function stop() { if (child?.exitCode === null) { const done = once(child, 'exit'); child.kill('SIGTERM'); await done; } }
+  t.after(async () => { fixture?.close(); await stop(); rmSync(dir, { recursive: true, force: true }); });
+  await start();
+  async function request(path, { method = 'GET', body, cookie, token, headers } = {}) {
+    const response = await fetch(base + path, { method, headers: { ...(body ? { 'Content-Type': 'application/json' } : {}), ...(cookie ? { Cookie: cookie } : {}), ...(token ? { Authorization: 'Bearer ' + token } : {}), ...headers }, body: body ? JSON.stringify(body) : undefined });
+    const data = response.headers.get('content-type')?.includes('application/json') ? await response.json() : await response.text();
+    return { status: response.status, data, cookie: response.headers.get('set-cookie')?.split(';')[0] };
+  }
+  const owner = await request('/api/register', { method: 'POST', body: { email: 'owner@example.com', password: 'Testing123!', name: '测试家庭' } });
+  assert.equal(owner.status, 200);
+  assert.ok(owner.cookie);
+  const cookie = owner.cookie;
+  const other = await request('/api/register', { method: 'POST', body: { email: 'other@example.com', password: 'Testing123!', name: '另一家庭' } });
+  assert.equal((await request('/api/me')).status, 401);
+  assert.equal((await request('/data/energy.sqlite')).status, 404);
+  assert.equal((await request('/api/login', { method: 'POST', body: { email: 'owner@example.com', password: 'Incorrect1' } })).status, 401);
+  assert.equal((await request('/api/settings', { method: 'PATCH', cookie, headers: { Origin: 'https://unrelated.example' }, body: {} })).status, 403);
+  const deviceBody = { deviceId: 'SP-TEST-1', alias: '工作电脑', type: '电脑', room: '书房', spec: 'Desktop' };
+  const bound = await request('/api/devices', { method: 'POST', cookie, body: deviceBody });
+  assert.equal(bound.status, 200);
+  const { bindingId: id, token } = bound.data;
+  assert.equal(token.length, 64);
+  assert.equal((await request('/api/devices', { method: 'POST', cookie: other.cookie, body: deviceBody })).status, 409);
+  assert.equal((await request(`/api/devices/${id}`, { cookie: other.cookie })).status, 404);
+  fixture = new DatabaseSync(dbPath);
+  const startTime = Date.now() - 3600000;
+  fixture.prepare('UPDATE bindings SET created=? WHERE id=?').run(startTime - 1000, id);
+  const telemetry = (timestamp, powerWatts, energyKwh) => ({ deviceId: deviceBody.deviceId, timestamp, powerWatts, ...(energyKwh === undefined ? {} : { energyKwh }) });
+  const upload = (body, auth = token) => request('/api/telemetry', { method: 'POST', token: auth, body });
+  assert.equal((await upload(telemetry(startTime, -1))).status, 400);
+  assert.equal((await upload(telemetry('2026-10-03T12:00:00', 100))).status, 400);
+  assert.equal((await upload(telemetry(startTime - 2000, 100))).status, 400);
+  assert.equal((await upload(telemetry(Date.now() + 120000, 100))).status, 400);
+  assert.equal((await upload({ ...telemetry(startTime, 100), deviceId: 'wrong-id' })).status, 403);
+  assert.equal((await upload(telemetry(startTime, 100), '0'.repeat(64))).status, 401);
+  assert.equal((await upload(telemetry(startTime, 100))).status, 200);
+  assert.equal((await request('/api/dashboard', { cookie })).data.energy, null);
+  assert.equal((await upload(telemetry(startTime, 100))).data.duplicate, true);
+  assert.equal((await upload(telemetry(startTime, 200))).status, 409);
+  await upload(telemetry(startTime + 60000, 200));
+  let snapshot = (await request('/api/dashboard', { cookie })).data;
+  assert.ok(Math.abs(snapshot.energy - 0.0025) < 1e-9, 'trapezoid integration');
+  await upload(telemetry(startTime + 120000, 200, 10));
+  await upload(telemetry(startTime + 1200000, 200, 10.5));
+  for (let i = 1; i <= 3; i++) await upload(telemetry(startTime + 1200000 + i * 60000, 200, 10.5 + i * .01));
+  snapshot = (await request('/api/dashboard', { cookie })).data;
+  assert.ok(Math.abs(snapshot.energy - (.0025 + 200 / 60000 + .53)) < 1e-9, 'counter gap contributes measured energy');
+  assert.equal(snapshot.devices[0].coveredMs, 300000, 'outage not counted as coverage');
+  assert.ok(Math.abs(Object.values(snapshot.daily).reduce((a,b) => a+b, 0) - snapshot.energy) < 1e-9);
+  assert.equal(snapshot.devices[0].baseline, null);
+  assert.equal(snapshot.aiConfigured, false);
+  assert.equal((await request(`/api/devices/${id}/identify`, { method: 'POST', cookie })).status, 409);
+  const suggestion = snapshot.suggestions[0];
+  assert.ok(suggestion);
+  assert.equal((await request('/api/actions', { method: 'POST', cookie, body: { key: suggestion.key, status: 'adopted' } })).status, 200);
+  assert.equal((await request('/api/dashboard', { cookie })).data.suggestions[0].status, 'adopted');
+  const report = await request('/api/reports', { method: 'POST', cookie, body: { days: 7, ai: false } });
+  assert.equal(report.status, 200);
+  const saved = await request(`/api/reports/${report.data.id}`, { cookie });
+  assert.equal(saved.data.kind, 'statistics');
+  assert.equal(saved.data.body.snapshot.energy, snapshot.energy);
+  assert.equal((await request(`/api/reports/${report.data.id}`, { cookie: other.cookie })).status, 404);
+  assert.equal((await request('/api/reports', { method: 'POST', cookie, body: { days: 7, ai: true } })).status, 409);
+  assert.equal((await request('/api/reports', { method: 'POST', cookie, body: { days: 7, ai: 'false' } })).status, 400);
+  await request(`/api/devices/${id}`, { method: 'PATCH', cookie, body: { ...deviceBody, alias: '改名电脑' } });
+  assert.equal((await request(`/api/reports/${report.data.id}`, { cookie })).data.body.snapshot.devices[0].alias, '工作电脑', 'report snapshot remains immutable');
+  const csv = await request(`/api/devices/${id}/export`, { cookie });
+  assert.equal(csv.data.split('\r\n').length, 8);
+  const rotated = await request(`/api/devices/${id}/token`, { method: 'POST', cookie });
+  assert.equal((await upload(telemetry(Date.now(), 300))).status, 401);
+  assert.equal((await upload(telemetry(Date.now(), 300), rotated.data.token)).status, 200);
+  await request('/api/settings', { method: 'PATCH', cookie, body: { name: '已保存家庭', price: .88, timezone: 'UTC', aiConsent: true } });
+  await stop(); await start();
+  assert.equal((await request('/api/me', { cookie })).data.user.name, '已保存家庭');
+  assert.equal((await request('/api/me', { cookie })).data.user.price, .88);
+  assert.equal((await request('/api/reports', { cookie })).data.reports.length, 1);
+  assert.equal((await request('/api/dashboard', { cookie: other.cookie })).data.devices.length, 0);
+  assert.equal((await request(`/api/devices/${id}`, { method: 'DELETE', cookie })).status, 200);
+  assert.equal((await upload(telemetry(Date.now(), 300), rotated.data.token)).status, 401);
+  const rebound = await request('/api/devices', { method: 'POST', cookie, body: { ...deviceBody, alias: '新电器' } });
+  assert.notEqual(rebound.data.bindingId, id);
+  snapshot = (await request('/api/dashboard', { cookie })).data;
+  assert.equal(snapshot.devices.find(d => d.id === rebound.data.bindingId).sampleCount, 0);
+  assert.ok(snapshot.devices.find(d => d.id === id).ended);
+  fixture.prepare('UPDATE bindings SET ended=? WHERE id=?').run(Date.now() - 40 * 86400000, id);
+  assert.equal((await request('/api/devices/history', { cookie })).data.devices[0].id, id);
+  assert.equal((await request(`/api/devices/${id}/export`, { cookie })).status, 200);
+  assert.equal((await request(`/api/devices/${id}`, { cookie })).status, 200);
+  await request('/api/logout', { method: 'POST', cookie });
+  assert.equal((await request('/api/me', { cookie })).status, 401);
+});
