@@ -14,7 +14,7 @@ test('account, telemetry, reports, isolation and persistence', async t => {
   async function start() {
     child = spawn(process.execPath, ['server.mjs'], {
       cwd: new URL('..', import.meta.url),
-      env: { ...process.env, PORT: '0', HOST: '127.0.0.1', DB_PATH: dbPath, OPENAI_API_KEY: '', OPENAI_MODEL: '', BENCHMARK_FILE: '' },
+      env: { ...process.env, PORT: '0', HOST: '127.0.0.1', DB_PATH: dbPath, KIMI_API_KEY: '', KIMI_MODEL: '', BENCHMARK_FILE: '' },
       stdio: ['ignore', 'pipe', 'pipe']
     });
     base = await new Promise((resolve, reject) => {
@@ -32,8 +32,8 @@ test('account, telemetry, reports, isolation and persistence', async t => {
   async function stop() { if (child?.exitCode === null) { const done = once(child, 'exit'); child.kill('SIGTERM'); await done; } }
   t.after(async () => { fixture?.close(); await stop(); rmSync(dir, { recursive: true, force: true }); });
   await start();
-  async function request(path, { method = 'GET', body, cookie, token, headers } = {}) {
-    const response = await fetch(base + path, { method, headers: { ...(body ? { 'Content-Type': 'application/json' } : {}), ...(cookie ? { Cookie: cookie } : {}), ...(token ? { Authorization: 'Bearer ' + token } : {}), ...headers }, body: body ? JSON.stringify(body) : undefined });
+  async function request(path, { method = 'GET', body, cookie, headers } = {}) {
+    const response = await fetch(base + path, { method, headers: { ...(body ? { 'Content-Type': 'application/json' } : {}), ...(cookie ? { Cookie: cookie } : {}), ...headers }, body: body ? JSON.stringify(body) : undefined });
     const data = response.headers.get('content-type')?.includes('application/json') ? await response.json() : await response.text();
     return { status: response.status, data, cookie: response.headers.get('set-cookie')?.split(';')[0] };
   }
@@ -49,21 +49,20 @@ test('account, telemetry, reports, isolation and persistence', async t => {
   const deviceBody = { deviceId: 'SP-TEST-1', alias: '工作电脑', type: '电脑', room: '书房', spec: 'Desktop' };
   const bound = await request('/api/devices', { method: 'POST', cookie, body: deviceBody });
   assert.equal(bound.status, 200);
-  const { bindingId: id, token } = bound.data;
-  assert.equal(token.length, 64);
+  const { bindingId: id } = bound.data;
+  assert.equal(bound.data.token, undefined);
   assert.equal((await request('/api/devices', { method: 'POST', cookie: other.cookie, body: deviceBody })).status, 409);
   assert.equal((await request(`/api/devices/${id}`, { cookie: other.cookie })).status, 404);
   fixture = new DatabaseSync(dbPath);
   const startTime = Date.now() - 3600000;
   fixture.prepare('UPDATE bindings SET created=? WHERE id=?').run(startTime - 1000, id);
   const telemetry = (timestamp, powerWatts, energyKwh) => ({ deviceId: deviceBody.deviceId, timestamp, powerWatts, ...(energyKwh === undefined ? {} : { energyKwh }) });
-  const upload = (body, auth = token) => request('/api/telemetry', { method: 'POST', token: auth, body });
+  const upload = body => request('/api/telemetry', { method: 'POST', body });
   assert.equal((await upload(telemetry(startTime, -1))).status, 400);
   assert.equal((await upload(telemetry('2026-10-03T12:00:00', 100))).status, 400);
   assert.equal((await upload(telemetry(startTime - 2000, 100))).status, 400);
   assert.equal((await upload(telemetry(Date.now() + 120000, 100))).status, 400);
-  assert.equal((await upload({ ...telemetry(startTime, 100), deviceId: 'wrong-id' })).status, 403);
-  assert.equal((await upload(telemetry(startTime, 100), '0'.repeat(64))).status, 401);
+  assert.equal((await upload({ ...telemetry(startTime, 100), deviceId: 'wrong-id' })).status, 404);
   assert.equal((await upload(telemetry(startTime, 100))).status, 200);
   assert.equal((await request('/api/dashboard', { cookie })).data.energy, null);
   assert.equal((await upload(telemetry(startTime, 100))).data.duplicate, true);
@@ -97,9 +96,8 @@ test('account, telemetry, reports, isolation and persistence', async t => {
   assert.equal((await request(`/api/reports/${report.data.id}`, { cookie })).data.body.snapshot.devices[0].alias, '工作电脑', 'report snapshot remains immutable');
   const csv = await request(`/api/devices/${id}/export`, { cookie });
   assert.equal(csv.data.split('\r\n').length, 8);
-  const rotated = await request(`/api/devices/${id}/token`, { method: 'POST', cookie });
-  assert.equal((await upload(telemetry(Date.now(), 300))).status, 401);
-  assert.equal((await upload(telemetry(Date.now(), 300), rotated.data.token)).status, 200);
+  assert.equal((await request(`/api/devices/${id}/token`, { method: 'POST', cookie })).status, 404);
+  assert.equal((await upload(telemetry(Date.now(), 300))).status, 200);
   await request('/api/settings', { method: 'PATCH', cookie, body: { name: '已保存家庭', price: .88, timezone: 'UTC', aiConsent: true } });
   await stop(); await start();
   assert.equal((await request('/api/me', { cookie })).data.user.name, '已保存家庭');
@@ -107,7 +105,7 @@ test('account, telemetry, reports, isolation and persistence', async t => {
   assert.equal((await request('/api/reports', { cookie })).data.reports.length, 1);
   assert.equal((await request('/api/dashboard', { cookie: other.cookie })).data.devices.length, 0);
   assert.equal((await request(`/api/devices/${id}`, { method: 'DELETE', cookie })).status, 200);
-  assert.equal((await upload(telemetry(Date.now(), 300), rotated.data.token)).status, 401);
+  assert.equal((await upload(telemetry(Date.now(), 300))).status, 404);
   const rebound = await request('/api/devices', { method: 'POST', cookie, body: { ...deviceBody, alias: '新电器' } });
   assert.notEqual(rebound.data.bindingId, id);
   snapshot = (await request('/api/dashboard', { cookie })).data;

@@ -1,3 +1,5 @@
+import { generateKimiText, kimiConfigured } from './kimi.js';
+
 const DAY = 86400000;
 const MAX_GAP = 5 * 60000;
 const CATEGORIES = ['空调', '冰箱', '洗衣机', '电视', '热水器', '路由器', '电脑', '其他 / 组合负载', '暂不确定'];
@@ -162,16 +164,13 @@ async function snapshot(user, days=7) {
   }
   const actions = await query('SELECT * FROM actions WHERE user_id=?',user.id);
   for (const s of suggestions) s.status=actions.find(a=>a.action_key===s.key)?.status||'pending';
-  return { from,to,days,devices,energy:devices.some(d=>d.energy!==null)?energy:null,daily,today:daily[dateKey(to,user.timezone)]??null,power:active.some(d=>d.online)?active.filter(d=>d.online).reduce((s,d)=>s+d.last.power,0):null,online:active.filter(d=>d.online).length,activeCount:active.length,coverage:expected?covered/expected:0,suggestions,hasBenchmarks:benchmarks.length>0,aiConfigured:!!env.OPENAI_API_KEY && !!env.OPENAI_MODEL };
+  return { from,to,days,devices,energy:devices.some(d=>d.energy!==null)?energy:null,daily,today:daily[dateKey(to,user.timezone)]??null,power:active.some(d=>d.online)?active.filter(d=>d.online).reduce((s,d)=>s+d.last.power,0):null,online:active.filter(d=>d.online).length,activeCount:active.length,coverage:expected?covered/expected:0,suggestions,hasBenchmarks:benchmarks.length>0,aiConfigured:kimiConfigured(env) };
 }
 async function modelText(user, instructions, input) {
-  requireValue(env.OPENAI_API_KEY && env.OPENAI_MODEL, '尚未配置 AI 服务', 409);
+  requireValue(kimiConfigured(env), '尚未配置 Kimi AI 服务', 409);
   requireValue(user.ai_consent, '请先在设置中允许向 AI 服务发送用电摘要', 409);
-  const response = await fetch('https://api.openai.com/v1/responses', { method:'POST', headers:{'Authorization':`Bearer ${env.OPENAI_API_KEY}`,'Content-Type':'application/json'}, body:JSON.stringify({model:env.OPENAI_MODEL,instructions,input:JSON.stringify(input),store:false,max_output_tokens:1800}),signal:AbortSignal.timeout(60000) });
-  requireValue(response.ok, 'AI 服务暂时不可用，请稍后重试', 502);
-  const data = await response.json();
-  const result = (data.output || []).flatMap(x=>x.content || []).filter(x=>x.type==='output_text').map(x=>x.text).join('\n');
-  requireValue(result, 'AI 未返回可用分析', 502); return result;
+  try { return await generateKimiText(env, instructions, input); }
+  catch { throw new ApiError(502, 'Kimi AI 服务暂时不可用，请稍后重试'); }
 }
 function reportInput(s) {
   return {period:{from:new Date(s.from).toISOString(),to:new Date(s.to).toISOString()},coverage:s.coverage,energyKwh:s.energy,devices:s.devices.map(d=>({type:d.type,spec:d.spec,energyKwh:d.energy,coverage:d.coverage,sampleCount:d.sampleCount,peakWatts:d.peak,standbyKwh:d.standby,baseline:d.baseline,comparisonReason:d.comparisonReason})),suggestions:s.suggestions.map(x=>({title:x.title,text:x.text,basis:x.basis}))};
@@ -205,13 +204,11 @@ async function api(req,res,url) {
   }
   if (path==='/api/telemetry') {
     requireValue(method==='POST','请求方法不支持',405);
-    const token=(req.headers.authorization||'').replace(/^Bearer /,'');
-    requireValue(/^[0-9a-f]{64}$/.test(token),'设备认证失败',401);
-    const plug=await one('SELECT * FROM plugs WHERE token_hash=? AND current_binding IS NOT NULL',await digest(token));
-    requireValue(plug,'设备认证失败',401);
-    await rateLimit(`device:${plug.id}`,600,60000);
     const b=await body(req);
-    requireValue(b.deviceId===plug.id,'设备 ID 与密钥不匹配',403);
+    const id=textValue(b.deviceId,'插座 ID',48);
+    const plug=await one('SELECT * FROM plugs WHERE id=? AND current_binding IS NOT NULL',id);
+    requireValue(plug,'未找到已绑定的插座 ID',404);
+    await rateLimit(`device:${plug.id}`,600,60000);
     requireValue(typeof b.powerWatts==='number' && Number.isFinite(b.powerWatts) && b.powerWatts>=0 && b.powerWatts<=100000,'powerWatts 必须在 0 至 100000 之间');
     requireValue(typeof b.timestamp==='number' || typeof b.timestamp==='string' && /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,3})?(?:Z|[+-]\d{2}:\d{2})$/.test(b.timestamp),'timestamp 必须包含明确时区');
     const timestamp=typeof b.timestamp==='string'?Date.parse(b.timestamp):b.timestamp;
@@ -222,7 +219,7 @@ async function api(req,res,url) {
     requireValue(energy===null || typeof energy==='number' && Number.isFinite(energy) && energy>=0 && energy<=1e9,'energyKwh 必须为非负累计电量');
     const existing=await one('SELECT * FROM readings WHERE plug_id=? AND timestamp=?',plug.id,timestamp);
     if (existing) {requireValue(existing.power===b.powerWatts && existing.energy===energy,'同一时间戳已存在不同数据',409);return {ok:true,duplicate:true};}
-    const inserted = await run('INSERT INTO readings(plug_id,binding_id,timestamp,power,energy) SELECT id,current_binding,?,?,? FROM plugs WHERE id=? AND current_binding=? AND token_hash=? ON CONFLICT(plug_id,timestamp) DO NOTHING',timestamp,b.powerWatts,energy,plug.id,plug.current_binding,await digest(token));
+    const inserted = await run('INSERT INTO readings(plug_id,binding_id,timestamp,power,energy) SELECT id,current_binding,?,?,? FROM plugs WHERE id=? AND current_binding=? ON CONFLICT(plug_id,timestamp) DO NOTHING',timestamp,b.powerWatts,energy,plug.id,plug.current_binding);
     if (!inserted.meta.changes) {
       const duplicate = await one('SELECT * FROM readings WHERE plug_id=? AND timestamp=?',plug.id,timestamp);
       requireValue(duplicate && duplicate.power===b.powerWatts && duplicate.energy===energy,'绑定或数据已变更，请重试',409);
@@ -261,23 +258,22 @@ async function api(req,res,url) {
     const spec=typeof b.spec==='string'?b.spec.trim().slice(0,120):'';
     const old=await one('SELECT * FROM plugs WHERE id=?',id);
     requireValue(!old || (!old.current_binding && old.user_id===user.id),'该 ID 已绑定或属于其他账户',409);
-    const token=secret(), hash=await digest(token);
     let result;
     try {
       result = await env.DB.batch([
-        statement('INSERT INTO plugs(id,token_hash,user_id) VALUES(?,?,?) ON CONFLICT(id) DO NOTHING',id,hash,user.id),
+        statement('INSERT INTO plugs(id,user_id) VALUES(?,?) ON CONFLICT(id) DO NOTHING',id,user.id),
         statement('INSERT INTO bindings(plug_id,user_id,alias,type,room,spec,created) VALUES(?,?,?,?,?,?,?)',id,user.id,alias,b.type,room,spec,Date.now()),
-        statement('UPDATE plugs SET token_hash=?,current_binding=last_insert_rowid() WHERE id=? AND user_id=?',hash,id,user.id)
+        statement('UPDATE plugs SET current_binding=last_insert_rowid() WHERE id=? AND user_id=?',id,user.id)
       ]);
     } catch (e) {
       if (/UNIQUE|plug ownership/.test(e.message)) throw new ApiError(409,'该 ID 已绑定或属于其他账户');
       throw e;
     }
-    return {deviceId:id,bindingId:Number(result[1].meta.last_row_id),token};
+    return {deviceId:id,bindingId:Number(result[1].meta.last_row_id)};
   }
-  const match=path.match(/^\/api\/devices\/(\d+)(?:\/(token|identify|export))?$/);
+  const match=path.match(/^\/api\/devices\/(\d+)(?:\/(identify|export))?$/);
   if(match) {
-    const b=await binding(user.id,match[1],['PATCH','DELETE'].includes(method)||match[2]==='token');
+    const b=await binding(user.id,match[1],['PATCH','DELETE'].includes(method));
     if(method==='GET' && !match[2]) {
       const days=Number(url.searchParams.get('days')||7);requireValue([1,7,30].includes(days),'周期不支持');
       const to=b.ended||Date.now();return {device:await summarize(b,to-days*DAY,to,user.timezone)};
@@ -290,11 +286,10 @@ async function api(req,res,url) {
     if(method==='DELETE' && !match[2]) {
       await env.DB.batch([
         statement('UPDATE bindings SET ended=? WHERE id=? AND ended IS NULL',Date.now(),b.id),
-        statement('UPDATE plugs SET current_binding=NULL,token_hash=? WHERE id=? AND current_binding=?',await digest(secret()),b.plug_id,b.id)
+        statement('UPDATE plugs SET current_binding=NULL WHERE id=? AND current_binding=?',b.plug_id,b.id)
       ]);
       emit(user.id);return {ok:true};
     }
-    if(method==='POST' && match[2]==='token') {const token=secret();await run('UPDATE plugs SET token_hash=? WHERE id=?',await digest(token),b.plug_id);return {deviceId:b.plug_id,token,bindingId:b.id};}
     if(method==='POST' && match[2]==='identify') {
       await rateLimit(`ai:${user.id}`,6,60000);
       const stats=await summarize(b,Date.now()-DAY,Date.now(),user.timezone);

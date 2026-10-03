@@ -3,7 +3,7 @@
   "version": "1.0.0",
   "private": true,
   "type": "module",
-  "scripts": { "start": "node server.mjs", "test": "node --test test/server.test.mjs", "test:cf": "node test/worker-smoke.mjs", "dev:cf": "wrangler dev", "deploy:cf": "wrangler deploy", "db:cf": "wrangler d1 migrations apply wattguard-db --remote" },
+  "scripts": { "start": "node --env-file-if-exists=.env server.mjs", "test": "node --test test/*.test.mjs", "test:cf": "node test/worker-smoke.mjs", "dev:cf": "wrangler dev", "deploy:cf": "wrangler deploy", "db:cf": "wrangler d1 migrations apply wattguard-db --remote" },
   "engines": { "node": ">=24" },
   "devDependencies": { "wrangler": "^4.147.0" }
 }

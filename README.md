@@ -1,6 +1,6 @@
 # 家庭用电网站
 
-这是可运行的 Web 应用：账户登录、家电绑定、设备认证、HTTP 功率上传、实时页面更新、历史用电记录、统计报告、可选 AI 报告、建议状态和 CSV 导出均由后端提供。
+这是可运行的 Web 应用：账户登录、家电绑定、按插座 ID 上传 HTTP 功率数据、实时页面更新、历史用电记录、统计报告、可选 AI 报告、建议状态和 CSV 导出均由后端提供。
 
 ## Cloudflare 公网部署
 
@@ -14,7 +14,7 @@ npm run deploy:cf
 
 `wrangler.toml` 已绑定 `wattguard-db`。线上页面每 30 秒同步一次用电状态；设备上传后新数据会进入 D1。部署使用 Cloudflare 分配的 `*.workers.dev` HTTPS 地址，具体地址以 `wrangler deploy` 输出为准。
 
-AI 模型是可选配置。需要启用时在 Cloudflare 账户中设置 `OPENAI_API_KEY` Secret 和 `OPENAI_MODEL` 环境变量，并在网站设置页允许分析。未配置时统计报告和规则建议照常工作，但 AI 识别与 AI 报告不可用。同类电器的真实基准尚未接入，网站会明确显示无法比较一般家庭。
+Kimi AI 是可选配置。需要启用时，给 Cloudflare Worker 设置 `KIMI_API_KEY` Secret，并在网站设置页允许分析。模型名由 `wrangler.toml` 中的 `KIMI_MODEL` 指定。未配置时统计报告和规则建议照常工作，但 AI 识别与 AI 报告不可用。同类电器的真实基准尚未接入，网站会明确显示无法比较一般家庭。
 
 ## 运行
 
@@ -30,18 +30,17 @@ npm start
 npm test
 ```
 
-集成测试使用独立临时数据库，验证账户隔离、上传校验、电量计算、密钥轮换、解绑、报告快照和服务重启后的持久化。浏览器完整流程已检查 1440、390、320 像素宽度的 11 个页面。
+集成测试使用独立临时数据库，验证账户隔离、上传校验、电量计算、解绑、报告快照和服务重启后的持久化。
 
 数据保存在 `data/energy.sqlite`。备份时先停止服务，或使用 SQLite 的在线备份工具，避免只复制仍在写入的主数据库。
 
 ## HTTP 硬件接入
 
-网页绑定插座时填写机身 ID、类型、别名和房间，取得一次性展示的设备上传密钥。硬件保存自己的 ID 和密钥。
+网页绑定插座时填写机身 ID、类型、别名和房间。硬件上传时只需发送同一个插座 ID，不使用设备密钥。
 
 ```http
 POST /api/telemetry
 Content-Type: application/json
-Authorization: Bearer DEVICE_TOKEN
 
 {
   "deviceId": "SP-00134",
@@ -53,11 +52,11 @@ Authorization: Bearer DEVICE_TOKEN
 
 将示例时间换成实际采样时间。`timestamp` 支持含时区的 ISO 时间或 Unix 毫秒时间，最大允许提前 60 秒，支持 90 天内补传；不得早于当前家电绑定时间。`powerWatts` 为必填非负功率，`energyKwh` 为可选的硬件累计读数，单位 kWh。
 
-推荐每 10–60 秒上传。相同设备与时间戳的重复请求幂等，数值冲突返回 409。成功返回 `{"ok":true,"receivedAt":"..."}`。认证失败返回 401。
+推荐每 10–60 秒上传。相同设备与时间戳的重复请求幂等，数值冲突返回 409。成功返回 `{"ok":true,"receivedAt":"..."}`；未绑定的插座 ID 返回 404。
 
-在家电详情页重新生成密钥，旧密钥立即失效。解绑也会撤销密钥；相同插座可在原账户重新绑定，新电器不会继承旧电器的用电记录。历史记录仍可导出。
+解绑后该插座 ID 停止接收上传；相同插座可在原账户重新绑定，新电器不会继承旧电器的用电记录。历史记录仍可导出。
 
-目前采用由账户主动登记 ID 并生成密钥的开发接入流程。量产硬件需要增加工厂预置设备证书或一次性认领码，防止第三方抢先登记机身 ID。
+当前接口仅凭插座 ID 识别上传来源。知道某个已绑定 ID 的人可能伪造读数，请勿公开真实 ID。量产硬件仍需设计可信的设备身份机制，以防止抢先登记或伪造上传。
 
 ## 电量计算
 
@@ -70,17 +69,24 @@ Authorization: Bearer DEVICE_TOKEN
 
 ## 真实 AI 服务
 
-设置以下环境变量，然后重启服务。模型使用你账户可用的 Responses API 文本模型，名称由你配置，不内置替代模型。
+Kimi 请求集中在 [`src/kimi.js`](src/kimi.js)，使用 Moonshot Chat Completions 接口。服务端读取 `KIMI_API_KEY` 与 `KIMI_MODEL`；网页不接收 API Key。你可根据 Kimi 账户支持的模型修改模型名。
+
+本地 Node 服务：将 `.env.example` 复制为 `.env`，把 `YOUR_KIMI_API_KEY` 换成自己的 Key，然后运行 `npm start`。`.env` 已被 Git 忽略。
+
+本地 Cloudflare Worker：将 `.dev.vars.example` 复制为 `.dev.vars`，填入自己的 Key，再运行 `npm run dev:cf`。`.dev.vars` 已被 Git 忽略。
+
+线上 Cloudflare Worker：在仓库目录执行以下命令，按提示输入 Key，随后部署。`KIMI_MODEL` 已写在 `wrangler.toml` 中。不要把 Key 写进该文件或提交到 GitHub。
 
 ```sh
-OPENAI_API_KEY=YOUR_KEY OPENAI_MODEL=YOUR_MODEL npm start
+npx wrangler secret put KIMI_API_KEY
+npm run deploy:cf
 ```
 
-在网页“家庭与设置”中授权后，AI 报告和电器候选识别会调用真实服务。请求仅发送去标识化统计摘要或功率时序，不发送邮箱、家庭名称、设备密钥，并设置 `store:false`。API 密钥只留在服务端。
+在网页“家庭与设置”中授权后，AI 报告和电器候选识别会调用 Kimi。请求仅发送去标识化统计摘要或功率时序，不发送邮箱、家庭名称、插座 ID。AI 服务密钥只留在服务端。
 
-未配置或未授权时，统计与规则报告可用；不会把规则输出伪装成 AI。首次识别至少需要 6 条读数，电器类型最终仍由用户确认。当前环境没有提供模型密钥，因此真实模型调用需在配置后验证。
+未配置或未授权时，统计与规则报告可用；不会把规则输出伪装成 AI。首次识别至少需要 6 条读数，电器类型最终仍由用户确认。当前环境没有提供 Kimi Key，因此真实模型调用需在配置后验证。
 
-接口参考：https://platform.openai.com/docs/api-reference/responses/create
+接口参考：https://platform.moonshot.cn/docs/api/chat
 
 ## 同类电器基准
 
@@ -108,8 +114,8 @@ OPENAI_API_KEY=YOUR_KEY OPENAI_MODEL=YOUR_MODEL npm start
 | `PORT` | `4310` | 服务端口 |
 | `HOST` | `127.0.0.1` | 监听地址；局域网可设 `0.0.0.0` |
 | `DB_PATH` | `data/energy.sqlite` | 数据库路径 |
-| `OPENAI_API_KEY` | 无 | AI 服务密钥 |
-| `OPENAI_MODEL` | 无 | 文本模型名称 |
+| `KIMI_API_KEY` | 无 | Kimi API Key，仅服务端使用 |
+| `KIMI_MODEL` | `kimi-k2.5`（Cloudflare） | Kimi 文本模型名称 |
 | `BENCHMARK_FILE` | 无 | 真实同类基准文件路径 |
 | `SECURE_COOKIE` | 无 | HTTPS 部署时设 `1` |
 

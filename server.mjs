@@ -4,6 +4,7 @@ import { randomBytes, scryptSync, timingSafeEqual, createHash } from 'node:crypt
 import { readFileSync, mkdirSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { generateKimiText, kimiConfigured } from './src/kimi.js';
 
 const ROOT = dirname(fileURLToPath(import.meta.url));
 const DB_PATH = process.env.DB_PATH || resolve(ROOT, 'data/energy.sqlite');
@@ -12,7 +13,7 @@ const db = new DatabaseSync(DB_PATH);
 db.exec(`PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;
 CREATE TABLE IF NOT EXISTS users(id INTEGER PRIMARY KEY,email TEXT UNIQUE NOT NULL,password TEXT NOT NULL,name TEXT NOT NULL,price REAL DEFAULT 0.6,timezone TEXT DEFAULT 'Asia/Hong_Kong',ai_consent INTEGER DEFAULT 0);
 CREATE TABLE IF NOT EXISTS sessions(token TEXT PRIMARY KEY,user_id INTEGER REFERENCES users(id),expires INTEGER NOT NULL);
-CREATE TABLE IF NOT EXISTS plugs(id TEXT PRIMARY KEY,token_hash TEXT NOT NULL,user_id INTEGER REFERENCES users(id),current_binding INTEGER);
+CREATE TABLE IF NOT EXISTS plugs(id TEXT PRIMARY KEY,user_id INTEGER REFERENCES users(id),current_binding INTEGER);
 CREATE TABLE IF NOT EXISTS bindings(id INTEGER PRIMARY KEY,plug_id TEXT REFERENCES plugs(id),user_id INTEGER REFERENCES users(id),alias TEXT NOT NULL,type TEXT NOT NULL,room TEXT NOT NULL,spec TEXT DEFAULT '',created INTEGER NOT NULL,ended INTEGER);
 CREATE TABLE IF NOT EXISTS readings(id INTEGER PRIMARY KEY,plug_id TEXT REFERENCES plugs(id),binding_id INTEGER REFERENCES bindings(id),timestamp INTEGER NOT NULL,power REAL NOT NULL,energy REAL,UNIQUE(plug_id,timestamp));
 CREATE INDEX IF NOT EXISTS reading_time ON readings(binding_id,timestamp);
@@ -168,16 +169,13 @@ function snapshot(user, days=7) {
   }
   const actions = query('SELECT * FROM actions WHERE user_id=?',user.id);
   for (const s of suggestions) s.status=actions.find(a=>a.action_key===s.key)?.status||'pending';
-  return { from,to,days,devices,energy:devices.some(d=>d.energy!==null)?energy:null,daily,today:daily[dateKey(to,user.timezone)]??null,power:active.some(d=>d.online)?active.filter(d=>d.online).reduce((s,d)=>s+d.last.power,0):null,online:active.filter(d=>d.online).length,activeCount:active.length,coverage:expected?covered/expected:0,suggestions,hasBenchmarks:benchmarks.length>0,aiConfigured:!!process.env.OPENAI_API_KEY && !!process.env.OPENAI_MODEL };
+  return { from,to,days,devices,energy:devices.some(d=>d.energy!==null)?energy:null,daily,today:daily[dateKey(to,user.timezone)]??null,power:active.some(d=>d.online)?active.filter(d=>d.online).reduce((s,d)=>s+d.last.power,0):null,online:active.filter(d=>d.online).length,activeCount:active.length,coverage:expected?covered/expected:0,suggestions,hasBenchmarks:benchmarks.length>0,aiConfigured:kimiConfigured(process.env) };
 }
 async function modelText(user, instructions, input) {
-  requireValue(process.env.OPENAI_API_KEY && process.env.OPENAI_MODEL, '尚未配置 AI 服务', 409);
+  requireValue(kimiConfigured(process.env), '尚未配置 Kimi AI 服务', 409);
   requireValue(user.ai_consent, '请先在设置中允许向 AI 服务发送用电摘要', 409);
-  const response = await fetch('https://api.openai.com/v1/responses', { method:'POST', headers:{'Authorization':`Bearer ${process.env.OPENAI_API_KEY}`,'Content-Type':'application/json'}, body:JSON.stringify({model:process.env.OPENAI_MODEL,instructions,input:JSON.stringify(input),store:false,max_output_tokens:1800}),signal:AbortSignal.timeout(60000) });
-  requireValue(response.ok, 'AI 服务暂时不可用，请稍后重试', 502);
-  const data = await response.json();
-  const result = (data.output || []).flatMap(x=>x.content || []).filter(x=>x.type==='output_text').map(x=>x.text).join('\n');
-  requireValue(result, 'AI 未返回可用分析', 502); return result;
+  try { return await generateKimiText(process.env, instructions, input); }
+  catch { throw new ApiError(502, 'Kimi AI 服务暂时不可用，请稍后重试'); }
 }
 function reportInput(s) {
   return {period:{from:new Date(s.from).toISOString(),to:new Date(s.to).toISOString()},coverage:s.coverage,energyKwh:s.energy,devices:s.devices.map(d=>({type:d.type,spec:d.spec,energyKwh:d.energy,coverage:d.coverage,sampleCount:d.sampleCount,peakWatts:d.peak,standbyKwh:d.standby,baseline:d.baseline,comparisonReason:d.comparisonReason})),suggestions:s.suggestions.map(x=>({title:x.title,text:x.text,basis:x.basis}))};
@@ -210,13 +208,11 @@ async function api(req,res,url) {
   }
   if (path==='/api/telemetry') {
     requireValue(method==='POST','请求方法不支持',405);
-    const token=(req.headers.authorization||'').replace(/^Bearer /,'');
-    requireValue(/^[0-9a-f]{64}$/.test(token),'设备认证失败',401);
-    const plug=one('SELECT * FROM plugs WHERE token_hash=? AND current_binding IS NOT NULL',digest(token));
-    requireValue(plug,'设备认证失败',401);
-    rateLimit(`device:${plug.id}`,600,60000);
     const b=await body(req);
-    requireValue(b.deviceId===plug.id,'设备 ID 与密钥不匹配',403);
+    const id=textValue(b.deviceId,'插座 ID',48);
+    const plug=one('SELECT * FROM plugs WHERE id=? AND current_binding IS NOT NULL',id);
+    requireValue(plug,'未找到已绑定的插座 ID',404);
+    rateLimit(`device:${plug.id}`,600,60000);
     requireValue(typeof b.powerWatts==='number' && Number.isFinite(b.powerWatts) && b.powerWatts>=0 && b.powerWatts<=100000,'powerWatts 必须在 0 至 100000 之间');
     requireValue(typeof b.timestamp==='number' || typeof b.timestamp==='string' && /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,3})?(?:Z|[+-]\d{2}:\d{2})$/.test(b.timestamp),'timestamp 必须包含明确时区');
     const timestamp=typeof b.timestamp==='string'?Date.parse(b.timestamp):b.timestamp;
@@ -266,18 +262,18 @@ async function api(req,res,url) {
     const spec=typeof b.spec==='string'?b.spec.trim().slice(0,120):'';
     const old=one('SELECT * FROM plugs WHERE id=?',id);
     requireValue(!old || (!old.current_binding && old.user_id===user.id),'该 ID 已绑定或属于其他账户',409);
-    const token=secret();db.exec('BEGIN');
+    db.exec('BEGIN');
     try {
-      if(!old)run('INSERT INTO plugs(id,token_hash,user_id) VALUES(?,?,?)',id,digest(token),user.id);
+      if(!old)run('INSERT INTO plugs(id,user_id) VALUES(?,?)',id,user.id);
       const result=run('INSERT INTO bindings(plug_id,user_id,alias,type,room,spec,created) VALUES(?,?,?,?,?,?,?)',id,user.id,alias,b.type,room,spec,Date.now());
       const bindingId=Number(result.lastInsertRowid);
-      run('UPDATE plugs SET token_hash=?,current_binding=? WHERE id=?',digest(token),bindingId,id);
-      db.exec('COMMIT');emit(user.id);return {deviceId:id,bindingId,token};
+      run('UPDATE plugs SET current_binding=? WHERE id=?',bindingId,id);
+      db.exec('COMMIT');emit(user.id);return {deviceId:id,bindingId};
     }catch(e){db.exec('ROLLBACK');throw e;}
   }
-  const match=path.match(/^\/api\/devices\/(\d+)(?:\/(token|identify|export))?$/);
+  const match=path.match(/^\/api\/devices\/(\d+)(?:\/(identify|export))?$/);
   if(match) {
-    const b=binding(user.id,match[1],['PATCH','DELETE'].includes(method)||match[2]==='token');
+    const b=binding(user.id,match[1],['PATCH','DELETE'].includes(method));
     if(method==='GET' && !match[2]) {
       const days=Number(url.searchParams.get('days')||7);requireValue([1,7,30].includes(days),'周期不支持');
       const to=b.ended||Date.now();return {device:summarize(b,to-days*DAY,to,user.timezone)};
@@ -288,10 +284,9 @@ async function api(req,res,url) {
       emit(user.id);return {ok:true};
     }
     if(method==='DELETE' && !match[2]) {
-      db.exec('BEGIN');try{run('UPDATE bindings SET ended=? WHERE id=?',Date.now(),b.id);run('UPDATE plugs SET current_binding=NULL,token_hash=? WHERE id=?',digest(secret()),b.plug_id);db.exec('COMMIT');}catch(e){db.exec('ROLLBACK');throw e;}
+      db.exec('BEGIN');try{run('UPDATE bindings SET ended=? WHERE id=?',Date.now(),b.id);run('UPDATE plugs SET current_binding=NULL WHERE id=?',b.plug_id);db.exec('COMMIT');}catch(e){db.exec('ROLLBACK');throw e;}
       emit(user.id);return {ok:true};
     }
-    if(method==='POST' && match[2]==='token') {const token=secret();run('UPDATE plugs SET token_hash=? WHERE id=?',digest(token),b.plug_id);return {deviceId:b.plug_id,token,bindingId:b.id};}
     if(method==='POST' && match[2]==='identify') {
       rateLimit(`ai:${user.id}`,6,60000);
       const stats=summarize(b,Date.now()-DAY,Date.now(),user.timezone);
