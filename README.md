@@ -14,7 +14,7 @@ npm run deploy:cf
 
 `wrangler.toml` 已绑定 `wattguard-db`。线上页面每 30 秒同步一次用电状态；设备上传后新数据会进入 D1。部署使用 Cloudflare 分配的 `*.workers.dev` HTTPS 地址，具体地址以 `wrangler deploy` 输出为准。
 
-Kimi AI 是可选配置。需要启用时，给 Cloudflare Worker 设置 `KIMI_API_KEY` Secret，并在网站设置页允许分析。模型名由 `wrangler.toml` 中的 `KIMI_MODEL` 指定。未配置时统计报告和规则建议照常工作，但 AI 识别与 AI 报告不可用。同类电器的真实基准尚未接入，网站会明确显示无法比较一般家庭。
+OpenAI 是可选配置。需要启用时，给 Cloudflare Worker 设置 `OPENAI_API_KEY` Secret，并在网站设置页允许分析。模型名由 `wrangler.toml` 中的 `OPENAI_MODEL` 指定，目前按要求设为 `gpt-5.6`；实际调用需要 API 账户支持该模型。未配置时统计报告和规则建议照常工作，但 AI 识别与 AI 报告不可用。同类电器的真实基准尚未接入，网站会明确显示无法比较一般家庭。
 
 ## 运行
 
@@ -69,24 +69,24 @@ Content-Type: application/json
 
 ## 真实 AI 服务
 
-Kimi 请求集中在 [`src/kimi.js`](src/kimi.js)，使用 Moonshot Chat Completions 接口。服务端读取 `KIMI_API_KEY` 与 `KIMI_MODEL`；网页不接收 API Key。你可根据 Kimi 账户支持的模型修改模型名。
+OpenAI 请求集中在 [`src/openai.js`](src/openai.js)，使用 Responses API。服务端读取 `OPENAI_API_KEY` 与 `OPENAI_MODEL`；网页不接收 API Key。ChatGPT 或 Codex 登录状态不能代替 API Key。
 
-本地 Node 服务：将 `.env.example` 复制为 `.env`，把 `YOUR_KIMI_API_KEY` 换成自己的 Key，然后运行 `npm start`。`.env` 已被 Git 忽略。
+本地 Node 服务：将 `.env.example` 复制为 `.env`，把 `YOUR_OPENAI_API_KEY` 换成自己的 Key，然后运行 `npm start`。`.env` 已被 Git 忽略。
 
 本地 Cloudflare Worker：将 `.dev.vars.example` 复制为 `.dev.vars`，填入自己的 Key，再运行 `npm run dev:cf`。`.dev.vars` 已被 Git 忽略。
 
-线上 Cloudflare Worker：在仓库目录执行以下命令，按提示输入 Key，随后部署。`KIMI_MODEL` 已写在 `wrangler.toml` 中。不要把 Key 写进该文件或提交到 GitHub。
+线上 Cloudflare Worker：在仓库目录执行以下命令，按提示输入 Key，随后部署。`OPENAI_MODEL` 已写在 `wrangler.toml` 中。不要把 Key 写进该文件或提交到 GitHub。
 
 ```sh
-npx wrangler secret put KIMI_API_KEY
+npx wrangler secret put OPENAI_API_KEY
 npm run deploy:cf
 ```
 
-在网页“家庭与设置”中授权后，AI 报告和电器候选识别会调用 Kimi。请求仅发送去标识化统计摘要或功率时序，不发送邮箱、家庭名称、插座 ID。AI 服务密钥只留在服务端。
+在网页“家庭与设置”中授权后，AI 报告和电器候选识别会调用 OpenAI。请求仅发送去标识化统计摘要或功率时序，不发送邮箱、家庭名称、插座 ID。AI 服务密钥只留在服务端。
 
-未配置或未授权时，统计与规则报告可用；不会把规则输出伪装成 AI。首次识别至少需要 6 条读数，电器类型最终仍由用户确认。当前环境没有提供 Kimi Key，因此真实模型调用需在配置后验证。
+未配置或未授权时，统计与规则报告可用；不会把规则输出伪装成 AI。首次识别至少需要 6 条读数，电器类型最终仍由用户确认。真实模型调用需在配置有效 API Key 后验证。
 
-接口参考：https://platform.moonshot.cn/docs/api/chat
+接口参考：https://platform.openai.com/docs/api-reference/responses/create
 
 ## 同类电器基准
 
@@ -114,8 +114,8 @@ npm run deploy:cf
 | `PORT` | `4310` | 服务端口 |
 | `HOST` | `127.0.0.1` | 监听地址；局域网可设 `0.0.0.0` |
 | `DB_PATH` | `data/energy.sqlite` | 数据库路径 |
-| `KIMI_API_KEY` | 无 | Kimi API Key，仅服务端使用 |
-| `KIMI_MODEL` | `kimi-k2.5`（Cloudflare） | Kimi 文本模型名称 |
+| `OPENAI_API_KEY` | 无 | OpenAI API Key，仅服务端使用 |
+| `OPENAI_MODEL` | `gpt-5.6`（Cloudflare） | OpenAI 模型名称，须由 API 账户支持 |
 | `BENCHMARK_FILE` | 无 | 真实同类基准文件路径 |
 | `SECURE_COOKIE` | 无 | HTTPS 部署时设 `1` |
 

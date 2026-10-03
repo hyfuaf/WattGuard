@@ -14,7 +14,7 @@ test('account, telemetry, reports, isolation and persistence', async t => {
   async function start() {
     child = spawn(process.execPath, ['server.mjs'], {
       cwd: new URL('..', import.meta.url),
-      env: { ...process.env, PORT: '0', HOST: '127.0.0.1', DB_PATH: dbPath, KIMI_API_KEY: '', KIMI_MODEL: '', BENCHMARK_FILE: '' },
+      env: { ...process.env, PORT: '0', HOST: '127.0.0.1', DB_PATH: dbPath, OPENAI_API_KEY: '', OPENAI_MODEL: '', BENCHMARK_FILE: '' },
       stdio: ['ignore', 'pipe', 'pipe']
     });
     base = await new Promise((resolve, reject) => {

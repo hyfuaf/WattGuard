@@ -4,7 +4,7 @@ import { randomBytes, scryptSync, timingSafeEqual, createHash } from 'node:crypt
 import { readFileSync, mkdirSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { generateKimiText, kimiConfigured, kimiErrorMessage } from './src/kimi.js';
+import { generateOpenAiText, openAiConfigured, openAiErrorMessage } from './src/openai.js';
 
 const ROOT = dirname(fileURLToPath(import.meta.url));
 const DB_PATH = process.env.DB_PATH || resolve(ROOT, 'data/energy.sqlite');
@@ -169,13 +169,13 @@ function snapshot(user, days=7) {
   }
   const actions = query('SELECT * FROM actions WHERE user_id=?',user.id);
   for (const s of suggestions) s.status=actions.find(a=>a.action_key===s.key)?.status||'pending';
-  return { from,to,days,devices,energy:devices.some(d=>d.energy!==null)?energy:null,daily,today:daily[dateKey(to,user.timezone)]??null,power:active.some(d=>d.online)?active.filter(d=>d.online).reduce((s,d)=>s+d.last.power,0):null,online:active.filter(d=>d.online).length,activeCount:active.length,coverage:expected?covered/expected:0,suggestions,hasBenchmarks:benchmarks.length>0,aiConfigured:kimiConfigured(process.env) };
+  return { from,to,days,devices,energy:devices.some(d=>d.energy!==null)?energy:null,daily,today:daily[dateKey(to,user.timezone)]??null,power:active.some(d=>d.online)?active.filter(d=>d.online).reduce((s,d)=>s+d.last.power,0):null,online:active.filter(d=>d.online).length,activeCount:active.length,coverage:expected?covered/expected:0,suggestions,hasBenchmarks:benchmarks.length>0,aiConfigured:openAiConfigured(process.env) };
 }
 async function modelText(user, instructions, input) {
-  requireValue(kimiConfigured(process.env), '尚未配置 Kimi AI 服务', 409);
+  requireValue(openAiConfigured(process.env), '尚未配置 OpenAI 服务', 409);
   requireValue(user.ai_consent, '请先在设置中允许向 AI 服务发送用电摘要', 409);
-  try { return await generateKimiText(process.env, instructions, input); }
-  catch (error) { throw new ApiError(502, kimiErrorMessage(error)); }
+  try { return await generateOpenAiText(process.env, instructions, input); }
+  catch (error) { throw new ApiError(502, openAiErrorMessage(error)); }
 }
 function reportInput(s) {
   return {period:{from:new Date(s.from).toISOString(),to:new Date(s.to).toISOString()},coverage:s.coverage,energyKwh:s.energy,devices:s.devices.map(d=>({type:d.type,spec:d.spec,energyKwh:d.energy,coverage:d.coverage,sampleCount:d.sampleCount,peakWatts:d.peak,standbyKwh:d.standby,baseline:d.baseline,comparisonReason:d.comparisonReason})),suggestions:s.suggestions.map(x=>({title:x.title,text:x.text,basis:x.basis}))};
