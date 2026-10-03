@@ -2,6 +2,20 @@
 
 这是可运行的 Web 应用：账户登录、家电绑定、设备认证、HTTP 功率上传、实时页面更新、历史用电记录、统计报告、可选 AI 报告、建议状态和 CSV 导出均由后端提供。
 
+## Cloudflare 公网部署
+
+线上版本使用 Cloudflare Workers 托管前端和 API，D1 保存账户与用电数据。先安装依赖，然后执行数据库迁移和部署：
+
+```sh
+npm install
+npm run db:cf
+npm run deploy:cf
+```
+
+`wrangler.toml` 已绑定 `wattguard-db`。线上页面每 30 秒同步一次用电状态；设备上传后新数据会进入 D1。部署使用 Cloudflare 分配的 `*.workers.dev` HTTPS 地址，具体地址以 `wrangler deploy` 输出为准。
+
+AI 模型是可选配置。需要启用时在 Cloudflare 账户中设置 `OPENAI_API_KEY` Secret 和 `OPENAI_MODEL` 环境变量，并在网站设置页允许分析。未配置时统计报告和规则建议照常工作，但 AI 识别与 AI 报告不可用。同类电器的真实基准尚未接入，网站会明确显示无法比较一般家庭。
+
 ## 运行
 
 需要 Node.js 24 或更高版本，无需安装第三方依赖。

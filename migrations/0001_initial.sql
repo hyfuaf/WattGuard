@@ -1,0 +1,16 @@
+CREATE TABLE IF NOT EXISTS users(id INTEGER PRIMARY KEY AUTOINCREMENT,email TEXT UNIQUE NOT NULL,password TEXT NOT NULL,name TEXT NOT NULL,price REAL DEFAULT 0.6,timezone TEXT DEFAULT 'Asia/Hong_Kong',ai_consent INTEGER DEFAULT 0);
+CREATE TABLE IF NOT EXISTS sessions(token TEXT PRIMARY KEY,user_id INTEGER REFERENCES users(id),expires INTEGER NOT NULL);
+CREATE TABLE IF NOT EXISTS plugs(id TEXT PRIMARY KEY,token_hash TEXT NOT NULL,user_id INTEGER REFERENCES users(id),current_binding INTEGER);
+CREATE TABLE IF NOT EXISTS bindings(id INTEGER PRIMARY KEY AUTOINCREMENT,plug_id TEXT REFERENCES plugs(id),user_id INTEGER REFERENCES users(id),alias TEXT NOT NULL,type TEXT NOT NULL,room TEXT NOT NULL,spec TEXT DEFAULT '',created INTEGER NOT NULL,ended INTEGER);
+CREATE TABLE IF NOT EXISTS readings(id INTEGER PRIMARY KEY AUTOINCREMENT,plug_id TEXT REFERENCES plugs(id),binding_id INTEGER REFERENCES bindings(id),timestamp INTEGER NOT NULL,power REAL NOT NULL,energy REAL,UNIQUE(plug_id,timestamp));
+CREATE INDEX IF NOT EXISTS reading_time ON readings(binding_id,timestamp);
+CREATE TABLE IF NOT EXISTS reports(id INTEGER PRIMARY KEY AUTOINCREMENT,user_id INTEGER REFERENCES users(id),created INTEGER NOT NULL,from_time INTEGER NOT NULL,to_time INTEGER NOT NULL,kind TEXT NOT NULL,body TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS actions(user_id INTEGER REFERENCES users(id),action_key TEXT NOT NULL,status TEXT NOT NULL,updated INTEGER NOT NULL,PRIMARY KEY(user_id,action_key));
+CREATE UNIQUE INDEX IF NOT EXISTS one_active_binding ON bindings(plug_id) WHERE ended IS NULL;
+CREATE INDEX IF NOT EXISTS plug_token ON plugs(token_hash);
+CREATE INDEX IF NOT EXISTS binding_owner ON bindings(user_id,created);
+CREATE INDEX IF NOT EXISTS report_owner ON reports(user_id,created);
+CREATE TABLE IF NOT EXISTS rate_limits(key TEXT PRIMARY KEY,count INTEGER NOT NULL,until INTEGER NOT NULL);
+CREATE TRIGGER IF NOT EXISTS check_binding_owner BEFORE INSERT ON bindings
+WHEN NOT EXISTS(SELECT 1 FROM plugs WHERE id=NEW.plug_id AND user_id=NEW.user_id AND current_binding IS NULL)
+BEGIN SELECT RAISE(ABORT,'plug ownership'); END;

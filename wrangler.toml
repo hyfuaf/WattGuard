@@ -1,0 +1,15 @@
+name = "wattguard"
+main = "src/worker.js"
+compatibility_date = "2026-10-01"
+workers_dev = true
+
+[assets]
+directory = "./public"
+binding = "ASSETS"
+run_worker_first = true
+
+[[d1_databases]]
+binding = "DB"
+database_name = "wattguard-db"
+database_id = "ba579b3a-6082-418a-906e-def271f06f85"
+migrations_dir = "migrations"
