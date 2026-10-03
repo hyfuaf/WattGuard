@@ -1,4 +1,4 @@
-import { generateKimiText, kimiConfigured } from './kimi.js';
+import { generateKimiText, kimiConfigured, kimiErrorMessage } from './kimi.js';
 
 const DAY = 86400000;
 const MAX_GAP = 5 * 60000;
@@ -170,7 +170,7 @@ async function modelText(user, instructions, input) {
   requireValue(kimiConfigured(env), '尚未配置 Kimi AI 服务', 409);
   requireValue(user.ai_consent, '请先在设置中允许向 AI 服务发送用电摘要', 409);
   try { return await generateKimiText(env, instructions, input); }
-  catch { throw new ApiError(502, 'Kimi AI 服务暂时不可用，请稍后重试'); }
+  catch (error) { throw new ApiError(502, kimiErrorMessage(error)); }
 }
 function reportInput(s) {
   return {period:{from:new Date(s.from).toISOString(),to:new Date(s.to).toISOString()},coverage:s.coverage,energyKwh:s.energy,devices:s.devices.map(d=>({type:d.type,spec:d.spec,energyKwh:d.energy,coverage:d.coverage,sampleCount:d.sampleCount,peakWatts:d.peak,standbyKwh:d.standby,baseline:d.baseline,comparisonReason:d.comparisonReason})),suggestions:s.suggestions.map(x=>({title:x.title,text:x.text,basis:x.basis}))};
