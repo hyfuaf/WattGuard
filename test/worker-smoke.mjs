@@ -44,4 +44,12 @@ assert.equal((await request(`/api/devices/${bindingId}/export`, { cookie: owner.
 assert.equal((await request(`/api/devices/${bindingId}/token`, { method: 'POST', cookie: owner.cookie })).status, 404);
 assert.equal((await request(`/api/devices/${bindingId}`, { method: 'DELETE', cookie: owner.cookie })).status, 200);
 assert.equal((await request('/api/telemetry', { method: 'POST', body: telemetry(Date.now()) })).status, 404);
+assert.equal((await request(`/api/devices/${bindingId}/permanent`, { method: 'DELETE', cookie: other.cookie })).status, 404);
+const rebound = await request('/api/devices', { method: 'POST', cookie: owner.cookie, body: { deviceId, alias: '新电脑', type: '电脑', room: '书房' } });
+assert.equal(rebound.status, 200);
+assert.equal((await request(`/api/devices/${bindingId}/permanent`, { method: 'DELETE', cookie: owner.cookie })).status, 200);
+assert.equal((await request(`/api/devices/${rebound.data.bindingId}`, { cookie: owner.cookie })).status, 200);
+assert.equal((await request(`/api/reports/${report.data.id}`, { cookie: owner.cookie })).data.body.snapshot.devices[0].alias, '工作电脑');
+assert.equal((await request(`/api/devices/${rebound.data.bindingId}/permanent`, { method: 'DELETE', cookie: owner.cookie })).status, 200);
+assert.equal((await request('/api/devices', { method: 'POST', cookie: owner.cookie, body: { deviceId, alias: '再次绑定', type: '电脑', room: '书房' } })).status, 200);
 console.log('Worker smoke test passed');

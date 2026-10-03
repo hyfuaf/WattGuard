@@ -271,9 +271,9 @@ async function api(req,res,url) {
       db.exec('COMMIT');emit(user.id);return {deviceId:id,bindingId};
     }catch(e){db.exec('ROLLBACK');throw e;}
   }
-  const match=path.match(/^\/api\/devices\/(\d+)(?:\/(identify|export))?$/);
+  const match=path.match(/^\/api\/devices\/(\d+)(?:\/(identify|export|permanent))?$/);
   if(match) {
-    const b=binding(user.id,match[1],['PATCH','DELETE'].includes(method));
+    const b=binding(user.id,match[1],method==='PATCH'||(method==='DELETE'&&!match[2]));
     if(method==='GET' && !match[2]) {
       const days=Number(url.searchParams.get('days')||7);requireValue([1,7,30].includes(days),'周期不支持');
       const to=b.ended||Date.now();return {device:summarize(b,to-days*DAY,to,user.timezone)};
@@ -285,6 +285,18 @@ async function api(req,res,url) {
     }
     if(method==='DELETE' && !match[2]) {
       db.exec('BEGIN');try{run('UPDATE bindings SET ended=? WHERE id=?',Date.now(),b.id);run('UPDATE plugs SET current_binding=NULL WHERE id=?',b.plug_id);db.exec('COMMIT');}catch(e){db.exec('ROLLBACK');throw e;}
+      emit(user.id);return {ok:true};
+    }
+    if(method==='DELETE' && match[2]==='permanent') {
+      db.exec('BEGIN');
+      try {
+        run('UPDATE plugs SET current_binding=NULL WHERE id=? AND current_binding=?',b.plug_id,b.id);
+        run('DELETE FROM readings WHERE binding_id=?',b.id);
+        run('DELETE FROM actions WHERE user_id=? AND action_key IN (?,?,?)',user.id,`coverage:${b.id}`,`standby:${b.id}`,`benchmark:${b.id}`);
+        run('DELETE FROM bindings WHERE id=? AND user_id=?',b.id,user.id);
+        run('DELETE FROM plugs WHERE id=? AND user_id=? AND NOT EXISTS (SELECT 1 FROM bindings WHERE plug_id=?)',b.plug_id,user.id,b.plug_id);
+        db.exec('COMMIT');
+      } catch(e) { db.exec('ROLLBACK');throw e; }
       emit(user.id);return {ok:true};
     }
     if(method==='POST' && match[2]==='identify') {
