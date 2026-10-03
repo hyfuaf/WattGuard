@@ -14,7 +14,7 @@ test('account, telemetry, reports, isolation and persistence', async t => {
   async function start() {
     child = spawn(process.execPath, ['server.mjs'], {
       cwd: new URL('..', import.meta.url),
-      env: { ...process.env, PORT: '0', HOST: '127.0.0.1', DB_PATH: dbPath, OPENAI_API_KEY: '', OPENAI_MODEL: '', BENCHMARK_FILE: '' },
+      env: { ...process.env, PORT: '0', HOST: '127.0.0.1', DB_PATH: dbPath, QWEN_API_KEY: '', QWEN_MODEL: '', BENCHMARK_FILE: '' },
       stdio: ['ignore', 'pipe', 'pipe']
     });
     base = await new Promise((resolve, reject) => {
@@ -42,6 +42,9 @@ test('account, telemetry, reports, isolation and persistence', async t => {
   assert.ok(owner.cookie);
   const cookie = owner.cookie;
   const other = await request('/api/register', { method: 'POST', body: { email: 'other@example.com', password: 'Testing123!', name: '另一家庭' } });
+  assert.equal(owner.data.user.subscriptionActive, false);
+  assert.equal((await request('/api/subscription', { method: 'POST', cookie: other.cookie, body: { active: true } })).data.user.subscriptionActive, true);
+  assert.equal((await request('/api/me', { cookie })).data.user.subscriptionActive, false, 'subscription is account-specific');
   assert.equal((await request('/api/me')).status, 401);
   assert.equal((await request('/data/energy.sqlite')).status, 404);
   assert.equal((await request('/api/login', { method: 'POST', body: { email: 'owner@example.com', password: 'Incorrect1' } })).status, 401);
@@ -90,7 +93,12 @@ test('account, telemetry, reports, isolation and persistence', async t => {
   assert.equal(saved.data.kind, 'statistics');
   assert.equal(saved.data.body.snapshot.energy, snapshot.energy);
   assert.equal((await request(`/api/reports/${report.data.id}`, { cookie: other.cookie })).status, 404);
-  assert.equal((await request('/api/reports', { method: 'POST', cookie, body: { days: 7, ai: true } })).status, 409);
+  const unsubscribedReport = await request('/api/reports', { method: 'POST', cookie, body: { days: 7, ai: true } });
+  assert.equal(unsubscribedReport.status, 403);
+  assert.match(unsubscribedReport.data.error, /订阅/);
+  assert.equal((await request('/api/subscription', { method: 'POST', cookie, body: { active: 'true' } })).status, 400);
+  assert.equal((await request('/api/subscription', { method: 'POST', cookie, body: { active: true } })).data.user.subscriptionActive, true);
+  assert.equal((await request('/api/reports', { method: 'POST', cookie, body: { days: 7, ai: true } })).status, 409, 'model configuration is checked after subscription');
   assert.equal((await request('/api/reports', { method: 'POST', cookie, body: { days: 7, ai: 'false' } })).status, 400);
   await request(`/api/devices/${id}`, { method: 'PATCH', cookie, body: { ...deviceBody, alias: '改名电脑' } });
   assert.equal((await request(`/api/reports/${report.data.id}`, { cookie })).data.body.snapshot.devices[0].alias, '工作电脑', 'report snapshot remains immutable');
@@ -102,6 +110,9 @@ test('account, telemetry, reports, isolation and persistence', async t => {
   await stop(); await start();
   assert.equal((await request('/api/me', { cookie })).data.user.name, '已保存家庭');
   assert.equal((await request('/api/me', { cookie })).data.user.price, .88);
+  assert.equal((await request('/api/me', { cookie })).data.user.subscriptionActive, true, 'subscription survives restart');
+  assert.equal((await request('/api/subscription', { method: 'POST', cookie, body: { active: false } })).data.user.subscriptionActive, false);
+  assert.equal((await request('/api/reports', { method: 'POST', cookie, body: { days: 7, ai: true } })).status, 403);
   assert.equal((await request('/api/reports', { cookie })).data.reports.length, 1);
   assert.equal((await request('/api/dashboard', { cookie: other.cookie })).data.devices.length, 0);
   assert.equal((await request(`/api/devices/${id}`, { method: 'DELETE', cookie })).status, 200);

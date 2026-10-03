@@ -19,3 +19,4 @@
 @media(max-width:390px){.topbar>span:first-child{display:none}.topbar>.button{margin-left:auto}.overview-head{flex-direction:column;gap:10px}.overview-head .button{max-width:none}.device-summary .button{flex-basis:100%;margin-left:0}.metrics .metric strong{font-size:20px}.metric small{display:inline-block;margin-left:2px}}
 @media print{.overview-head .button,.sidebar-tools,.report-actions{display:none}}
 .button.danger{color:#a73530;border-color:#d9a4a0}.button.danger:hover{background:#fff0ee;border-color:#a73530}
+.subscription-row{display:flex;align-items:center;justify-content:space-between;gap:24px}.subscription-row p{margin:6px 0 0;max-width:650px}.subscription-row .button{flex-shrink:0}@media(max-width:600px){.subscription-row{align-items:flex-start;flex-direction:column;gap:14px}}

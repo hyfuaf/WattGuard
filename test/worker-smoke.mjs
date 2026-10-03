@@ -20,6 +20,10 @@ const owner = await request('/api/register', { method: 'POST', body: { email: `w
 assert.equal(owner.status, 200, JSON.stringify(owner.data));
 const other = await request('/api/register', { method: 'POST', body: { email: `other-${stamp}@example.com`, password: 'Testing123!', name: '另一家庭' } });
 assert.equal(other.status, 200);
+assert.equal(owner.data.user.subscriptionActive, false);
+assert.equal((await request('/api/subscription', { method: 'POST', cookie: owner.cookie, body: { active: true } })).data.user.subscriptionActive, true);
+assert.equal((await request('/api/me', { cookie: other.cookie })).data.user.subscriptionActive, false);
+assert.equal((await request('/api/subscription', { method: 'POST', cookie: owner.cookie, body: { active: false } })).data.user.subscriptionActive, false);
 const deviceId = `SP-${stamp}`;
 const bound = await request('/api/devices', { method: 'POST', cookie: owner.cookie, body: { deviceId, alias: '工作电脑', type: '电脑', room: '书房', spec: '台式机' } });
 assert.equal(bound.status, 200, JSON.stringify(bound.data));
@@ -38,6 +42,7 @@ assert.equal(snapshot.status, 200);
 assert.ok(snapshot.data.energy > 0, 'measured interval should produce energy');
 const report = await request('/api/reports', { method: 'POST', cookie: owner.cookie, body: { days: 7, ai: false } });
 assert.equal(report.status, 200, JSON.stringify(report.data));
+assert.equal((await request('/api/reports', { method: 'POST', cookie: owner.cookie, body: { days: 7, ai: true } })).status, 403);
 assert.equal((await request(`/api/reports/${report.data.id}`, { cookie: owner.cookie })).data.kind, 'statistics');
 assert.equal((await request(`/api/reports/${report.data.id}`, { cookie: other.cookie })).status, 404);
 assert.equal((await request(`/api/devices/${bindingId}/export`, { cookie: owner.cookie })).status, 200);
