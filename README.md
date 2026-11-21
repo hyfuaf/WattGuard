@@ -28,13 +28,3 @@ npm start
 ```
 
 打开 http://localhost:4310，注册账户后即可使用。
-
-## 部署
-
-```bash
-npm ci
-npm run db:cf
-npm run deploy:cf
-```
-
-部署前需要登录 Cloudflare，并在 `wrangler.toml` 中配置自己的 D1 数据库。GitHub Pages 仅支持静态网页，不能运行本项目的账户和数据服务。
