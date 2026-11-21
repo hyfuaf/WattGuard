@@ -18,3 +18,27 @@ WattGuard 是一个借助 AI 辅助开发的家庭用电管理网站，帮助用
 ## 技术实现
 
 前端使用 HTML、CSS 和 JavaScript，后端使用 Node.js，数据存储使用 SQLite。
+
+## 功能展示
+
+以下截图来自本地演示账户，使用模拟用电数据，仅用于展示界面与功能，不代表真实设备测量结果。
+
+### 用电总览
+查看家庭功率、周期用电量、估算费用与每日趋势。
+
+<img src="docs/screenshots/overview.jpg" alt="用电总览" width="430">
+
+### 家电管理
+按房间、类别与连接状态筛选家电，查看各设备的用电情况。
+
+<img src="docs/screenshots/devices.jpg" alt="家电管理" width="430">
+
+### 家电详情
+查看功率变化、用电计算依据，并管理家电信息。
+
+<img src="docs/screenshots/device-detail.jpg" alt="家电详情" width="430">
+
+### 统计报告
+汇总周期用电量、费用估算与各家电耗电占比。
+
+<img src="docs/screenshots/report.jpg" alt="统计报告" width="430">
