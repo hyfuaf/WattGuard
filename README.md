@@ -17,7 +17,7 @@ WattGuard 是一个借助 AI 辅助开发的家庭用电管理网站，帮助用
 
 ## 技术实现
 
-HTML、CSS、JavaScript；Node.js 与 SQLite。公网部署支持 Cloudflare Workers 与 D1 数据库。
+前端使用 HTML、CSS 和 JavaScript，后端使用 Node.js，数据存储使用 SQLite。
 
 ## 本地运行
 
