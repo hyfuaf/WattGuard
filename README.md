@@ -18,13 +18,3 @@ WattGuard 是一个借助 AI 辅助开发的家庭用电管理网站，帮助用
 ## 技术实现
 
 前端使用 HTML、CSS 和 JavaScript，后端使用 Node.js，数据存储使用 SQLite。
-
-## 本地运行
-
-需要 Node.js 24 或以上版本：
-
-```bash
-npm start
-```
-
-打开 http://localhost:4310，注册账户后即可使用。
